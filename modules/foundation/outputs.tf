@@ -14,26 +14,11 @@ output "runtime_service_account" {
 }
 
 output "state_bucket_name" {
-  value       = google_storage_bucket.runtime_state.name
-  description = "GCS bucket mounted into Cloud Run for current file-backed state."
+  value       = var.enable_state_bucket ? google_storage_bucket.runtime_state[0].name : null
+  description = "GCS bucket mounted into Cloud Run for file-backed state, or null when disabled."
 }
 
 output "secret_ids" {
-  value       = { for key, secret in google_secret_manager_secret.secrets : key => secret.secret_id }
-  description = "Secret Manager secret ids created for runtime configuration."
-}
-
-output "app_env_secret" {
-  value       = google_secret_manager_secret.secrets["app_env"].secret_id
-  description = "Secret id reserved for app-level environment payloads."
-}
-
-output "plaid_client_id_secret" {
-  value       = google_secret_manager_secret.secrets["plaid_client_id"].secret_id
-  description = "Secret id reserved for Plaid client id."
-}
-
-output "plaid_secret_secret" {
-  value       = google_secret_manager_secret.secrets["plaid_secret"].secret_id
-  description = "Secret id reserved for Plaid secret."
+  value       = { for short, secret in google_secret_manager_secret.secrets : short => secret.secret_id }
+  description = "Map of short secret name => Secret Manager secret id for every created secret."
 }

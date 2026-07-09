@@ -10,7 +10,7 @@ variable "region" {
 
 variable "name" {
   type        = string
-  description = "Short runtime name, for example whale-dev."
+  description = "Short runtime name, used as a prefix for all created resources (for example league-dev)."
 }
 
 variable "labels" {
@@ -21,225 +21,112 @@ variable "labels" {
 
 variable "service_account_email" {
   type        = string
-  description = "Runtime service account email."
+  description = "Runtime service account email (from the foundation module)."
 }
 
 variable "state_bucket_name" {
   type        = string
-  description = "GCS bucket mounted into runtime containers at /data."
-}
-
-variable "api_image" {
-  type        = string
-  description = "Container image for the Whale API / Soma sensory gateway."
-}
-
-variable "worker_image" {
-  type        = string
-  description = "Container image for one-shot sensor and classifier workers."
-}
-
-variable "ui_image" {
-  type        = string
-  description = "Container image for the Whale UI."
-}
-
-variable "studio_image" {
-  type        = string
-  description = "Optional Agape Studio image to run beside Whale on the same Soma runtime."
+  description = "GCS bucket to mount into services/jobs that set mount_state = true. Required only if anything mounts state."
   default     = null
-}
-
-variable "plaid_env" {
-  type        = string
-  description = "Plaid environment passed to runtime containers."
-  default     = "sandbox"
 }
 
 variable "common_env" {
   type        = map(string)
-  description = "Plain environment variables shared by API, worker, and Studio containers."
+  description = "Plain environment variables merged into every service and job container."
   default     = {}
 }
 
-variable "api_env" {
-  type        = map(string)
-  description = "Additional plain environment variables for the API service."
-  default     = {}
+variable "services" {
+  description = "Cloud Run services to create, keyed by short name (resource name becomes <name>-<key>). All fields except image are optional."
+  type = map(object({
+    image                 = string
+    port                  = optional(number, 8080)
+    env                   = optional(map(string), {})
+    secret_env            = optional(map(string), {}) # env var name => Secret Manager secret id (reads version "latest")
+    cpu                   = optional(string, "1")
+    memory                = optional(string, "512Mi")
+    min_instances         = optional(number, 0)
+    max_instances         = optional(number, 2)
+    ingress               = optional(string, "INGRESS_TRAFFIC_ALL")
+    allow_unauthenticated = optional(bool, false)
+    invoker_members       = optional(list(string), [])
+    mount_state           = optional(bool, false)
+    state_mount_path      = optional(string, "/data")
+    enable_iap            = optional(bool, false)
+    iap_members           = optional(list(string), [])
+    attach_cloud_sql      = optional(bool, false)
+  }))
+  default = {}
 }
 
-variable "worker_env" {
-  type        = map(string)
-  description = "Additional plain environment variables for worker jobs."
-  default     = {}
+variable "jobs" {
+  description = "Cloud Run jobs to create, keyed by short name (resource name becomes <name>-<key>). All fields except image are optional."
+  type = map(object({
+    image            = string
+    env              = optional(map(string), {})
+    secret_env       = optional(map(string), {})
+    mount_state      = optional(bool, false)
+    state_mount_path = optional(string, "/data")
+    attach_cloud_sql = optional(bool, false)
+  }))
+  default = {}
 }
 
-variable "ui_env" {
-  type        = map(string)
-  description = "Additional plain environment variables for the UI gateway service."
-  default     = {}
-}
-
-variable "studio_env" {
-  type        = map(string)
-  description = "Additional plain environment variables for the optional Studio service."
-  default     = {}
-}
-
-variable "secret_env" {
-  type        = map(string)
-  description = "Environment variable name to Secret Manager secret id. The runtime reads version latest."
-  default     = {}
-}
-
-variable "allow_unauthenticated_api" {
-  type        = bool
-  description = "Grant allUsers run.invoker on the API service. Useful for local demo CORS; tighten later."
-  default     = false
-}
-
-variable "allow_unauthenticated_ui" {
-  type        = bool
-  description = "Grant allUsers run.invoker on the UI service."
-  default     = false
-}
-
-variable "allow_unauthenticated_studio" {
-  type        = bool
-  description = "Grant allUsers run.invoker on Studio when studio_image is set."
-  default     = false
-}
-
-variable "invoker_members" {
-  type        = list(string)
-  description = "IAM members allowed to invoke private Cloud Run services, for example user:name@example.com or serviceAccount:name@project.iam.gserviceaccount.com."
+variable "pubsub_topics" {
+  type        = set(string)
+  description = "Pub/Sub topic short names to create (topic name becomes <name>-<topic>)."
   default     = []
 }
 
-variable "enable_iap_ui" {
+variable "pubsub_subscriptions" {
+  description = "Pub/Sub subscriptions to create, keyed by short name. `topic` references a key in pubsub_topics."
+  type = map(object({
+    topic = string
+  }))
+  default = {}
+}
+
+variable "scheduler_jobs" {
+  description = "Cloud Scheduler jobs that make an authenticated (OIDC) HTTP call to one of the services, keyed by short name."
+  type = map(object({
+    schedule       = string
+    target_service = string # key in var.services
+    path           = optional(string, "/")
+    http_method    = optional(string, "POST")
+    time_zone      = optional(string, "Etc/UTC")
+    description    = optional(string, null)
+  }))
+  default = {}
+}
+
+variable "inject_topic_env" {
   type        = bool
-  description = "Enable Identity-Aware Proxy on the UI Cloud Run service."
+  description = "Inject every created topic's id into all services/jobs as env vars named topic_env_prefix followed by the upper-snake-case topic name."
   default     = false
 }
 
-variable "iap_access_members" {
-  type        = list(string)
-  description = "IAM members allowed through IAP, for example user:name@example.com."
-  default     = []
-}
-
-variable "api_ingress" {
+variable "topic_env_prefix" {
   type        = string
-  description = "Cloud Run ingress setting for the API service."
-  default     = "INGRESS_TRAFFIC_ALL"
-}
-
-variable "ui_ingress" {
-  type        = string
-  description = "Cloud Run ingress setting for the UI service."
-  default     = "INGRESS_TRAFFIC_ALL"
-}
-
-variable "studio_ingress" {
-  type        = string
-  description = "Cloud Run ingress setting for the optional Studio service."
-  default     = "INGRESS_TRAFFIC_ALL"
-}
-
-variable "api_min_instances" {
-  type        = number
-  description = "Minimum API instances."
-  default     = 0
-}
-
-variable "api_max_instances" {
-  type        = number
-  description = "Maximum API instances."
-  default     = 2
-}
-
-variable "ui_min_instances" {
-  type        = number
-  description = "Minimum UI instances."
-  default     = 0
-}
-
-variable "ui_max_instances" {
-  type        = number
-  description = "Maximum UI instances."
-  default     = 2
-}
-
-variable "studio_min_instances" {
-  type        = number
-  description = "Minimum Studio instances."
-  default     = 0
-}
-
-variable "studio_max_instances" {
-  type        = number
-  description = "Maximum Studio instances."
-  default     = 1
-}
-
-variable "api_cpu" {
-  type        = string
-  description = "API CPU limit."
-  default     = "1"
-}
-
-variable "api_memory" {
-  type        = string
-  description = "API memory limit."
-  default     = "512Mi"
-}
-
-variable "ui_cpu" {
-  type        = string
-  description = "UI CPU limit."
-  default     = "1"
-}
-
-variable "ui_memory" {
-  type        = string
-  description = "UI memory limit."
-  default     = "512Mi"
-}
-
-variable "studio_port" {
-  type        = number
-  description = "Container port for the optional Studio service."
-  default     = 8080
-}
-
-variable "sync_schedule" {
-  type        = string
-  description = "Cron schedule for transaction sync."
-  default     = "*/30 * * * *"
-}
-
-variable "sync_time_zone" {
-  type        = string
-  description = "Time zone for Cloud Scheduler."
-  default     = "America/Los_Angeles"
+  description = "Prefix for auto-injected topic env vars when inject_topic_env is true."
+  default     = "SOMA_TOPIC_"
 }
 
 variable "enable_cloud_sql" {
   type        = bool
-  description = "Create a Cloud SQL Postgres instance. The current app uses GCS-backed file state, so this can stay false for low-cost demos."
+  description = "Create a Cloud SQL Postgres instance and attach it to services/jobs that set attach_cloud_sql = true. Standard libpq env (PGHOST, PGDATABASE, PGUSER) and a PGPASSWORD secret are injected into those containers."
   default     = false
 }
 
 variable "database_name" {
   type        = string
   description = "Database name when enable_cloud_sql is true."
-  default     = "whale"
+  default     = "app"
 }
 
 variable "database_user" {
   type        = string
   description = "Database user when enable_cloud_sql is true."
-  default     = "whale"
+  default     = "app"
 }
 
 variable "database_tier" {

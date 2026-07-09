@@ -5,34 +5,23 @@ locals {
     managed = "terraform"
   })
 
-  required_services = toset([
+  # Base APIs the foundation itself needs. App-specific APIs (pubsub, sqladmin,
+  # cloudscheduler, iap, firestore, ...) are opt-in via var.additional_gcp_services.
+  base_services = [
     "artifactregistry.googleapis.com",
     "cloudbuild.googleapis.com",
-    "cloudscheduler.googleapis.com",
-    "firestore.googleapis.com",
     "iam.googleapis.com",
-    "iap.googleapis.com",
-    "pubsub.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
-    "sqladmin.googleapis.com",
-    "storage.googleapis.com"
-  ])
+    "storage.googleapis.com",
+  ]
 
-  runtime_roles = toset([
-    "roles/cloudsql.client",
-    "roles/datastore.user",
-    "roles/logging.logWriter",
-    "roles/pubsub.publisher",
-    "roles/pubsub.subscriber"
-  ])
+  required_services = toset(concat(local.base_services, var.additional_gcp_services))
 
-  secret_ids = {
-    app_env         = "${var.name}-app-env"
-    plaid_client_id = "${var.name}-plaid-client-id"
-    plaid_secret    = "${var.name}-plaid-secret"
-    openai_api_key  = "${var.name}-openai-api-key"
-  }
+  runtime_roles = toset(var.runtime_roles)
+
+  # secret short-name => full secret id
+  secret_ids = { for short in var.secret_names : short => "${var.name}-${short}" }
 
   state_bucket_name = coalesce(var.state_bucket_name, "${var.project_id}-${var.name}-runtime-state")
 }
@@ -55,6 +44,8 @@ data "google_project" "current" {
 # needs builder permissions (source download, image push, log writing) before
 # `gcloud builds submit` can work.
 resource "google_project_iam_member" "cloud_build_compute_builder" {
+  count = var.grant_cloudbuild_builder ? 1 : 0
+
   project = var.project_id
   role    = "roles/cloudbuild.builds.builder"
   member  = "serviceAccount:${data.google_project.current.number}-compute@developer.gserviceaccount.com"
@@ -112,6 +103,8 @@ resource "google_secret_manager_secret_iam_member" "runtime_secret_access" {
 }
 
 resource "google_storage_bucket" "runtime_state" {
+  count = var.enable_state_bucket ? 1 : 0
+
   project  = var.project_id
   name     = local.state_bucket_name
   location = var.region
@@ -139,7 +132,9 @@ resource "google_storage_bucket" "runtime_state" {
 }
 
 resource "google_storage_bucket_iam_member" "runtime_state_writer" {
-  bucket = google_storage_bucket.runtime_state.name
+  count = var.enable_state_bucket ? 1 : 0
+
+  bucket = google_storage_bucket.runtime_state[0].name
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.runtime.email}"
 }

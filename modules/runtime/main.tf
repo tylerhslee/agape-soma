@@ -9,87 +9,71 @@ locals {
     managed = "terraform"
   })
 
-  signal_topics = toset([
-    "sensory-events",
-    "transaction-observed",
-    "classification-requested",
-    "decision-events",
-    "ledger-events"
-  ])
-
   cloud_sql_connection_name = var.enable_cloud_sql ? google_sql_database_instance.postgres[0].connection_name : null
 
+  # Standard libpq connection env for containers that attach Cloud SQL. The app
+  # chooses how to consume it; no app-specific backend selector is injected.
   database_env = var.enable_cloud_sql ? {
-    PGDATABASE          = var.database_name
-    PGHOST              = "/cloudsql/${local.cloud_sql_connection_name}"
-    PGUSER              = var.database_user
-    WHALE_STATE_BACKEND = "postgres"
+    PGDATABASE = var.database_name
+    PGHOST     = "/cloudsql/${local.cloud_sql_connection_name}"
+    PGUSER     = var.database_user
   } : {}
 
   database_secret_env = var.enable_cloud_sql ? {
     PGPASSWORD = google_secret_manager_secret.database_password[0].secret_id
   } : {}
 
-  runtime_secret_env = merge(var.secret_env, local.database_secret_env)
-
-  base_env = {
-    AGAPE_BIN                       = "/usr/local/bin/agape"
-    PLAID_ENV                       = var.plaid_env
-    SOMA_CLASSIFICATION_TOPIC       = google_pubsub_topic.signals["classification-requested"].id
-    SOMA_DECISION_TOPIC             = google_pubsub_topic.signals["decision-events"].id
-    SOMA_LEDGER_TOPIC               = google_pubsub_topic.signals["ledger-events"].id
-    SOMA_SENSORY_TOPIC              = google_pubsub_topic.signals["sensory-events"].id
-    SOMA_TRANSACTION_OBSERVED_TOPIC = google_pubsub_topic.signals["transaction-observed"].id
-    WHALE_DATA_DIR                  = "/data"
-    WHALE_STATE_PATH                = "/data/whale-state.json"
-  }
-
-  api_env = merge(local.base_env, local.database_env, var.common_env, var.api_env, {
-    API_PORT          = "8787"
-    SOMA_SERVICE_ROLE = "sensory-gateway"
-  })
-
-  sync_worker_env = merge(local.base_env, local.database_env, var.common_env, var.worker_env, {
-    SOMA_SERVICE_ROLE = "sensor-sync"
-    WHALE_WORKER_MODE = "sync-only"
-  })
-
-  classifier_worker_env = merge(local.base_env, local.database_env, var.common_env, var.worker_env, {
-    SOMA_SERVICE_ROLE = "classifier-agent"
-    WHALE_WORKER_MODE = "classify"
-  })
-
-  ui_env = merge(var.common_env, var.ui_env, {
-    API_BASE_URL      = google_cloud_run_v2_service.api.uri
-    SOMA_RUNTIME_NAME = var.name
-    SOMA_SERVICE_ROLE = "whale-ui-gateway"
-  })
+  topic_env = var.inject_topic_env ? {
+    for short, topic in google_pubsub_topic.topics :
+    "${var.topic_env_prefix}${upper(replace(short, "-", "_"))}" => topic.id
+  } : {}
 
   iap_service_agent = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-iap.iam.gserviceaccount.com"
+
+  # Flattened (service, member) pairs for private run.invoker bindings.
+  service_invokers = merge(concat([{}], [
+    for svc_key, svc in var.services : {
+      for member in svc.invoker_members :
+      "${svc_key}:${member}" => { service = svc_key, member = member }
+    }
+  ])...)
+
+  # Flattened (service, member) pairs for IAP accessors (only IAP-enabled services).
+  iap_accessors = merge(concat([{}], [
+    for svc_key, svc in var.services : {
+      for member in svc.iap_members :
+      "${svc_key}:${member}" => { service = svc_key, member = member }
+    } if svc.enable_iap
+  ])...)
+
+  iap_services      = toset([for svc_key, svc in var.services : svc_key if svc.enable_iap])
+  public_services   = toset([for svc_key, svc in var.services : svc_key if svc.allow_unauthenticated])
+  scheduler_targets = toset([for k, j in var.scheduler_jobs : j.target_service])
 }
 
-resource "google_pubsub_topic" "signals" {
-  for_each = local.signal_topics
+#
+# Pub/Sub
+#
+resource "google_pubsub_topic" "topics" {
+  for_each = var.pubsub_topics
+
+  project = var.project_id
+  name    = "${var.name}-${each.value}"
+  labels  = local.labels
+}
+
+resource "google_pubsub_subscription" "subscriptions" {
+  for_each = var.pubsub_subscriptions
 
   project = var.project_id
   name    = "${var.name}-${each.key}"
+  topic   = google_pubsub_topic.topics[each.value.topic].id
   labels  = local.labels
 }
 
-resource "google_pubsub_subscription" "classifier_requests" {
-  project = var.project_id
-  name    = "${var.name}-classifier-requests"
-  topic   = google_pubsub_topic.signals["classification-requested"].id
-  labels  = local.labels
-}
-
-resource "google_pubsub_subscription" "ledger_events" {
-  project = var.project_id
-  name    = "${var.name}-ledger-events"
-  topic   = google_pubsub_topic.signals["ledger-events"].id
-  labels  = local.labels
-}
-
+#
+# Optional Cloud SQL (Postgres)
+#
 resource "google_sql_database_instance" "postgres" {
   count = var.enable_cloud_sql ? 1 : 0
 
@@ -157,31 +141,40 @@ resource "google_secret_manager_secret_iam_member" "runtime_database_password" {
   member    = "serviceAccount:${var.service_account_email}"
 }
 
-resource "google_cloud_run_v2_service" "api" {
-  project  = var.project_id
-  name     = "${var.name}-api"
-  location = var.region
-  ingress  = var.api_ingress
-  labels   = local.labels
+#
+# Cloud Run services
+#
+resource "google_cloud_run_v2_service" "services" {
+  for_each = var.services
+
+  project     = var.project_id
+  name        = "${var.name}-${each.key}"
+  location    = var.region
+  ingress     = each.value.ingress
+  iap_enabled = each.value.enable_iap
+  labels      = local.labels
 
   template {
     service_account = var.service_account_email
 
     scaling {
-      min_instance_count = var.api_min_instances
-      max_instance_count = var.api_max_instances
+      min_instance_count = each.value.min_instances
+      max_instance_count = each.value.max_instances
     }
 
-    volumes {
-      name = "runtime-state"
-      gcs {
-        bucket    = var.state_bucket_name
-        read_only = false
+    dynamic "volumes" {
+      for_each = each.value.mount_state && var.state_bucket_name != null ? [1] : []
+      content {
+        name = "runtime-state"
+        gcs {
+          bucket    = var.state_bucket_name
+          read_only = false
+        }
       }
     }
 
     dynamic "volumes" {
-      for_each = var.enable_cloud_sql ? [1] : []
+      for_each = each.value.attach_cloud_sql && var.enable_cloud_sql ? [1] : []
       content {
         name = "cloudsql"
         cloud_sql_instance {
@@ -191,21 +184,26 @@ resource "google_cloud_run_v2_service" "api" {
     }
 
     containers {
-      image = var.api_image
+      image = each.value.image
 
       ports {
-        container_port = 8787
+        container_port = each.value.port
       }
 
       resources {
         limits = {
-          cpu    = var.api_cpu
-          memory = var.api_memory
+          cpu    = each.value.cpu
+          memory = each.value.memory
         }
       }
 
       dynamic "env" {
-        for_each = local.api_env
+        for_each = merge(
+          var.common_env,
+          local.topic_env,
+          each.value.attach_cloud_sql ? local.database_env : {},
+          each.value.env
+        )
         content {
           name  = env.key
           value = env.value
@@ -213,7 +211,10 @@ resource "google_cloud_run_v2_service" "api" {
       }
 
       dynamic "env" {
-        for_each = local.runtime_secret_env
+        for_each = merge(
+          each.value.attach_cloud_sql ? local.database_secret_env : {},
+          each.value.secret_env
+        )
         content {
           name = env.key
           value_source {
@@ -225,13 +226,16 @@ resource "google_cloud_run_v2_service" "api" {
         }
       }
 
-      volume_mounts {
-        name       = "runtime-state"
-        mount_path = "/data"
+      dynamic "volume_mounts" {
+        for_each = each.value.mount_state && var.state_bucket_name != null ? [1] : []
+        content {
+          name       = "runtime-state"
+          mount_path = each.value.state_mount_path
+        }
       }
 
       dynamic "volume_mounts" {
-        for_each = var.enable_cloud_sql ? [1] : []
+        for_each = each.value.attach_cloud_sql && var.enable_cloud_sql ? [1] : []
         content {
           name       = "cloudsql"
           mount_path = "/cloudsql"
@@ -241,122 +245,54 @@ resource "google_cloud_run_v2_service" "api" {
   }
 }
 
-resource "google_cloud_run_v2_service" "ui" {
-  project     = var.project_id
-  name        = "${var.name}-ui"
-  location    = var.region
-  ingress     = var.ui_ingress
-  iap_enabled = var.enable_iap_ui
-  labels      = local.labels
-
-  template {
-    service_account = var.service_account_email
-
-    scaling {
-      min_instance_count = var.ui_min_instances
-      max_instance_count = var.ui_max_instances
-    }
-
-    containers {
-      image = var.ui_image
-
-      ports {
-        container_port = 8080
-      }
-
-      resources {
-        limits = {
-          cpu    = var.ui_cpu
-          memory = var.ui_memory
-        }
-      }
-
-      dynamic "env" {
-        for_each = local.ui_env
-        content {
-          name  = env.key
-          value = env.value
-        }
-      }
-    }
-  }
-}
-
-resource "google_iap_web_cloud_run_service_iam_member" "ui_iap_accessors" {
-  for_each = var.enable_iap_ui ? toset(var.iap_access_members) : []
-
-  project                = var.project_id
-  location               = var.region
-  cloud_run_service_name = google_cloud_run_v2_service.ui.name
-  role                   = "roles/iap.httpsResourceAccessor"
-  member                 = each.value
-}
-
-resource "google_cloud_run_v2_service_iam_member" "ui_iap_invoker" {
-  count = var.enable_iap_ui ? 1 : 0
+resource "google_cloud_run_v2_service_iam_member" "public" {
+  for_each = local.public_services
 
   project  = var.project_id
   location = var.region
-  name     = google_cloud_run_v2_service.ui.name
+  name     = google_cloud_run_v2_service.services[each.value].name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
+resource "google_cloud_run_v2_service_iam_member" "invokers" {
+  for_each = local.service_invokers
+
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.services[each.value.service].name
+  role     = "roles/run.invoker"
+  member   = each.value.member
+}
+
+resource "google_cloud_run_v2_service_iam_member" "iap_invoker" {
+  for_each = local.iap_services
+
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.services[each.value].name
   role     = "roles/run.invoker"
   member   = local.iap_service_agent
 }
 
-resource "google_cloud_run_v2_service" "studio" {
-  count = var.studio_image == null ? 0 : 1
+resource "google_iap_web_cloud_run_service_iam_member" "iap_accessors" {
+  for_each = local.iap_accessors
 
-  project  = var.project_id
-  name     = "${var.name}-studio"
-  location = var.region
-  ingress  = var.studio_ingress
-  labels   = local.labels
-
-  template {
-    service_account = var.service_account_email
-
-    scaling {
-      min_instance_count = var.studio_min_instances
-      max_instance_count = var.studio_max_instances
-    }
-
-    volumes {
-      name = "runtime-state"
-      gcs {
-        bucket    = var.state_bucket_name
-        read_only = false
-      }
-    }
-
-    containers {
-      image = var.studio_image
-
-      ports {
-        container_port = var.studio_port
-      }
-
-      dynamic "env" {
-        for_each = merge(local.base_env, var.common_env, var.studio_env, {
-          API_BASE_URL      = google_cloud_run_v2_service.api.uri
-          SOMA_SERVICE_ROLE = "agape-studio"
-          WHALE_DATA_DIR    = "/data"
-        })
-        content {
-          name  = env.key
-          value = env.value
-        }
-      }
-
-      volume_mounts {
-        name       = "runtime-state"
-        mount_path = "/data"
-      }
-    }
-  }
+  project                = var.project_id
+  location               = var.region
+  cloud_run_service_name = google_cloud_run_v2_service.services[each.value.service].name
+  role                   = "roles/iap.httpsResourceAccessor"
+  member                 = each.value.member
 }
 
-resource "google_cloud_run_v2_job" "sensor_sync" {
+#
+# Cloud Run jobs
+#
+resource "google_cloud_run_v2_job" "jobs" {
+  for_each = var.jobs
+
   project  = var.project_id
-  name     = "${var.name}-sensor-sync"
+  name     = "${var.name}-${each.key}"
   location = var.region
   labels   = local.labels
 
@@ -365,7 +301,18 @@ resource "google_cloud_run_v2_job" "sensor_sync" {
       service_account = var.service_account_email
 
       dynamic "volumes" {
-        for_each = var.enable_cloud_sql ? [1] : []
+        for_each = each.value.mount_state && var.state_bucket_name != null ? [1] : []
+        content {
+          name = "runtime-state"
+          gcs {
+            bucket    = var.state_bucket_name
+            read_only = false
+          }
+        }
+      }
+
+      dynamic "volumes" {
+        for_each = each.value.attach_cloud_sql && var.enable_cloud_sql ? [1] : []
         content {
           name = "cloudsql"
           cloud_sql_instance {
@@ -375,10 +322,15 @@ resource "google_cloud_run_v2_job" "sensor_sync" {
       }
 
       containers {
-        image = var.worker_image
+        image = each.value.image
 
         dynamic "env" {
-          for_each = local.sync_worker_env
+          for_each = merge(
+            var.common_env,
+            local.topic_env,
+            each.value.attach_cloud_sql ? local.database_env : {},
+            each.value.env
+          )
           content {
             name  = env.key
             value = env.value
@@ -386,7 +338,10 @@ resource "google_cloud_run_v2_job" "sensor_sync" {
         }
 
         dynamic "env" {
-          for_each = local.runtime_secret_env
+          for_each = merge(
+            each.value.attach_cloud_sql ? local.database_secret_env : {},
+            each.value.secret_env
+          )
           content {
             name = env.key
             value_source {
@@ -399,63 +354,15 @@ resource "google_cloud_run_v2_job" "sensor_sync" {
         }
 
         dynamic "volume_mounts" {
-          for_each = var.enable_cloud_sql ? [1] : []
+          for_each = each.value.mount_state && var.state_bucket_name != null ? [1] : []
           content {
-            name       = "cloudsql"
-            mount_path = "/cloudsql"
-          }
-        }
-      }
-    }
-  }
-}
-
-resource "google_cloud_run_v2_job" "classifier_agent" {
-  project  = var.project_id
-  name     = "${var.name}-classifier-agent"
-  location = var.region
-  labels   = local.labels
-
-  template {
-    template {
-      service_account = var.service_account_email
-
-      dynamic "volumes" {
-        for_each = var.enable_cloud_sql ? [1] : []
-        content {
-          name = "cloudsql"
-          cloud_sql_instance {
-            instances = [local.cloud_sql_connection_name]
-          }
-        }
-      }
-
-      containers {
-        image = var.worker_image
-
-        dynamic "env" {
-          for_each = local.classifier_worker_env
-          content {
-            name  = env.key
-            value = env.value
-          }
-        }
-
-        dynamic "env" {
-          for_each = local.runtime_secret_env
-          content {
-            name = env.key
-            value_source {
-              secret_key_ref {
-                secret  = env.value
-                version = "latest"
-              }
-            }
+            name       = "runtime-state"
+            mount_path = each.value.state_mount_path
           }
         }
 
         dynamic "volume_mounts" {
-          for_each = var.enable_cloud_sql ? [1] : []
+          for_each = each.value.attach_cloud_sql && var.enable_cloud_sql ? [1] : []
           content {
             name       = "cloudsql"
             mount_path = "/cloudsql"
@@ -466,90 +373,37 @@ resource "google_cloud_run_v2_job" "classifier_agent" {
   }
 }
 
-resource "google_cloud_run_v2_service_iam_member" "public_api" {
-  count = var.allow_unauthenticated_api ? 1 : 0
+#
+# Cloud Scheduler (authenticated HTTP calls to a service)
+#
+resource "google_cloud_run_v2_service_iam_member" "scheduler_invoker" {
+  for_each = local.scheduler_targets
 
   project  = var.project_id
   location = var.region
-  name     = google_cloud_run_v2_service.api.name
-  role     = "roles/run.invoker"
-  member   = "allUsers"
-}
-
-resource "google_cloud_run_v2_service_iam_member" "public_ui" {
-  count = var.allow_unauthenticated_ui ? 1 : 0
-
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.ui.name
-  role     = "roles/run.invoker"
-  member   = "allUsers"
-}
-
-resource "google_cloud_run_v2_service_iam_member" "public_studio" {
-  count = var.studio_image != null && var.allow_unauthenticated_studio ? 1 : 0
-
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.studio[0].name
-  role     = "roles/run.invoker"
-  member   = "allUsers"
-}
-
-resource "google_cloud_run_v2_service_iam_member" "api_invokers" {
-  for_each = toset(var.invoker_members)
-
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.api.name
-  role     = "roles/run.invoker"
-  member   = each.value
-}
-
-resource "google_cloud_run_v2_service_iam_member" "ui_invokers" {
-  for_each = toset(var.invoker_members)
-
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.ui.name
-  role     = "roles/run.invoker"
-  member   = each.value
-}
-
-resource "google_cloud_run_v2_service_iam_member" "studio_invokers" {
-  for_each = toset(var.studio_image == null ? [] : var.invoker_members)
-
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.studio[0].name
-  role     = "roles/run.invoker"
-  member   = each.value
-}
-
-resource "google_cloud_run_v2_service_iam_member" "api_scheduler_invoker" {
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.api.name
+  name     = google_cloud_run_v2_service.services[each.value].name
   role     = "roles/run.invoker"
   member   = "serviceAccount:${var.service_account_email}"
 }
 
-resource "google_cloud_scheduler_job" "transaction_sync" {
+resource "google_cloud_scheduler_job" "jobs" {
+  for_each = var.scheduler_jobs
+
   project     = var.project_id
   region      = var.region
-  name        = "${var.name}-transaction-sync"
-  description = "Soma sensory tick: pull Plaid transactions and run the classifier path."
-  schedule    = var.sync_schedule
-  time_zone   = var.sync_time_zone
+  name        = "${var.name}-${each.key}"
+  description = coalesce(each.value.description, "Soma scheduled call to ${each.value.target_service}${each.value.path}")
+  schedule    = each.value.schedule
+  time_zone   = each.value.time_zone
 
   http_target {
-    uri         = "${google_cloud_run_v2_service.api.uri}/plaid/sync"
-    http_method = "POST"
+    uri         = "${google_cloud_run_v2_service.services[each.value.target_service].uri}${each.value.path}"
+    http_method = each.value.http_method
 
     oidc_token {
       service_account_email = var.service_account_email
     }
   }
 
-  depends_on = [google_cloud_run_v2_service_iam_member.api_scheduler_invoker]
+  depends_on = [google_cloud_run_v2_service_iam_member.scheduler_invoker]
 }

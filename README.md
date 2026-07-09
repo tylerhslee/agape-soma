@@ -1,29 +1,102 @@
 # Soma
 
-Soma is Whale's cloud body: Terraform modules that turn Agape runtime concepts into managed infrastructure.
+Soma is a small, app-neutral Terraform layer for deploying containerized apps to
+GCP Cloud Run. It began as Whale's cloud body (Agape/Plaid-specific), and as of
+**v0.2.0** the runtime is fully generic: an app declares the services, jobs,
+topics, subscriptions, schedulers, and secrets it needs, and Soma builds them.
 
-The current target is GCP. This is not the final "Terraform replaces Rust runtime" design yet. It is the first deployable cloud runtime shape where managed services carry the runtime responsibilities that are currently local files, local processes, and the Rust Agape binary in Docker.
-
-## Runtime Components
-
-- Sensory gateway: Cloud Run API service. Receives UI calls, Plaid callbacks, and explicit sync requests.
-- Interface: Cloud Run UI service.
-- Sensor sync: Cloud Run job scaffold for pulling external inputs such as Plaid transactions.
-- Classifier agent: Cloud Run job scaffold for running Agape classifier passes over observed transactions.
-- Signal bus: Pub/Sub topics for sensory events, transaction observations, classification requests, decision events, and ledger events.
-- Memory/state: GCS bucket mounted at `/data` for Cloud Run services that need the current file-backed state implementation.
-- Secrets: Secret Manager placeholders for Plaid and future model provider credentials.
-- Studio: optional Cloud Run service for Agape Studio once a Studio image is available.
+Nothing app-specific (Plaid, Agape, classifiers, a fixed set of topics) is baked
+in anymore — those are just values a caller passes.
 
 ## Modules
 
-- `modules/foundation`: project APIs, Artifact Registry, runtime service account, IAM, state bucket, and secret placeholders.
-- `modules/runtime`: Cloud Run services/jobs, Pub/Sub runtime topics/subscriptions, scheduled sync, and optional Cloud SQL.
+- `modules/foundation`: project API enablement, Artifact Registry, a runtime
+  service account + IAM, an optional GCS state bucket, and Secret Manager
+  placeholders. Secrets, extra APIs, and IAM roles are all caller-supplied.
+- `modules/runtime`: Cloud Run **services** and **jobs**, Pub/Sub **topics** and
+  **subscriptions**, Cloud **scheduler** jobs, and optional Cloud SQL — every
+  group is a map that defaults to empty.
 
-## Current Persistence Posture
+## Versioning
 
-Whale currently persists state through `WHALE_STATE_PATH`. Soma mounts a GCS bucket into the API service at `/data`, so the app can run in cloud before the state layer is migrated to Firestore, Cloud SQL, or an event-sourced ledger.
+Consume via a pinned git ref:
 
-The scheduled dev path calls the API service's `/plaid/sync` endpoint, so sync and classification use the durable mounted state. The worker jobs are present as separate runtime organs, but they should be wired to Firestore/SQL/event state before they become the primary scheduled path.
+```hcl
+module "foundation" {
+  source = "git::https://github.com/tylerhslee/agape-soma.git//modules/foundation?ref=v0.2.0"
+  # ...
+}
+```
 
-That is acceptable for a dev/demo runtime. It is not the final production memory layer.
+- `v0.1.0` — Whale-specific runtime (fixed api/ui/studio/workers, Plaid/Agape env, hardcoded topics). Whale currently pins this.
+- `v0.2.0` — generalized, data-driven runtime (this README).
+
+## Minimal example (single service + state + one secret)
+
+```hcl
+module "foundation" {
+  source       = "git::https://github.com/tylerhslee/agape-soma.git//modules/foundation?ref=v0.2.0"
+  project_id   = var.project_id
+  region       = var.region
+  name         = "league-dev"
+  secret_names = ["riot-api-key"]
+}
+
+module "runtime" {
+  source                = "git::https://github.com/tylerhslee/agape-soma.git//modules/runtime?ref=v0.2.0"
+  project_id            = var.project_id
+  region                = var.region
+  name                  = "league-dev"
+  service_account_email = module.foundation.runtime_service_account
+  state_bucket_name     = module.foundation.state_bucket_name
+
+  services = {
+    api = {
+      image                 = "${module.foundation.artifact_repository_url}/app:latest"
+      port                  = 8787
+      mount_state           = true            # SQLite at /data
+      allow_unauthenticated = true
+      secret_env            = { RIOT_API_KEY = module.foundation.secret_ids["riot-api-key"] }
+    }
+  }
+}
+```
+
+See `examples/` for a runnable minimal config (`examples/league-analyzer`) and a
+full config exercising every building block (`examples/full-featured`).
+
+## Runtime building blocks
+
+Each is a map keyed by a short name; the resource name becomes `<name>-<key>`.
+
+- **`services`** — Cloud Run services. Per-service knobs: `image`, `port`, `env`,
+  `secret_env`, `cpu`/`memory`, `min_instances`/`max_instances`, `ingress`,
+  `allow_unauthenticated`, `invoker_members`, `mount_state` (+ `state_mount_path`),
+  `enable_iap` (+ `iap_members`), `attach_cloud_sql`.
+- **`jobs`** — Cloud Run jobs. `image`, `env`, `secret_env`, `mount_state`,
+  `attach_cloud_sql`.
+- **`pubsub_topics`** / **`pubsub_subscriptions`** — a topic set and subscriptions
+  that reference topics by key. Set `inject_topic_env = true` to auto-inject each
+  topic id into every container as `SOMA_TOPIC_<UPPER_SNAKE>` (prefix configurable).
+- **`scheduler_jobs`** — Cloud Scheduler jobs that make an OIDC-authenticated HTTP
+  call to one of the services (`target_service` + `path`).
+- **Cloud SQL** — set `enable_cloud_sql = true`; containers that opt in with
+  `attach_cloud_sql = true` get the socket mounted and standard libpq env
+  (`PGHOST`/`PGDATABASE`/`PGUSER`) plus a `PGPASSWORD` secret.
+
+## Foundation building blocks
+
+- **`secret_names`** — short names to create as `<name>-<secret_name>`; read the
+  ids back from the `secret_ids` output map.
+- **`additional_gcp_services`** — APIs to enable beyond the base set (run,
+  artifactregistry, cloudbuild, iam, secretmanager, storage). Add pubsub,
+  cloudscheduler, sqladmin, iap, firestore, etc. as the app uses them.
+- **`runtime_roles`** — project IAM roles for the runtime service account
+  (defaults to `roles/logging.logWriter`).
+- **`enable_state_bucket`** — create the GCS state bucket (default true).
+
+## State posture
+
+The GCS state bucket mounted at `/data` is for apps still using file-backed state
+(e.g. a SQLite file). Apps with a real database can set `enable_state_bucket = false`
+and drop `mount_state`, or use the optional Cloud SQL instance.
