@@ -119,6 +119,12 @@ variable "invoker_members" {
   default     = []
 }
 
+variable "studio_require_token" {
+  type        = bool
+  description = "Also require Studio's own access token (?token=…) on top of IAP, as defense-in-depth. Off by default: IAP already authenticates every request, and the token was designed for unauthenticated tunnels. When true, the studio-access-token secret is injected and the URL needs the token appended."
+  default     = false
+}
+
 variable "app_min_instances" {
   type        = number
   description = "Minimum app instances (set 1 to avoid cold starts on gated coach turns)."

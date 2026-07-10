@@ -57,9 +57,11 @@ marked spots. The reference implementation is league-analyzer's coach.
 
 - `<name>-app` — your application, IAP-gated, Agape runtime embedded.
 - `<name>-studio` — Agape Studio (editor, orchestration graph, ledger,
-  provider menu, `--live`), IAP-gated, token additionally required:
-  `gcloud secrets versions access latest --secret <name>-studio-access-token`,
-  then open `studio_uri/?token=<value>`.
+  provider menu, `--live`), IAP-gated. Open `studio_uri` directly — IAP is the
+  auth; Studio's own token gate is off by default. Set
+  `studio_require_token = true` on the module for defense-in-depth (then
+  append `?token=` from
+  `gcloud secrets versions access latest --secret <name>-studio-access-token`).
 - One persistent Agape project at `/data/agape` shared by both services:
   **Studio edits are what the app executes**, and the knowledge substrate
   survives restarts and redeploys (entrypoint seeding is copy-if-missing).

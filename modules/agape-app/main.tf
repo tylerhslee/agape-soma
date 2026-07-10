@@ -90,10 +90,11 @@ module "runtime" {
       max_instances = 1
       env           = var.studio_env
 
-      secret_env = {
-        ANTHROPIC_API_KEY   = module.foundation.secret_ids["anthropic-api-key"]
-        STUDIO_ACCESS_TOKEN = module.foundation.secret_ids["studio-access-token"]
-      }
+      # IAP authenticates Studio; the token gate is opt-in defense-in-depth.
+      secret_env = merge(
+        { ANTHROPIC_API_KEY = module.foundation.secret_ids["anthropic-api-key"] },
+        var.studio_require_token ? { STUDIO_ACCESS_TOKEN = module.foundation.secret_ids["studio-access-token"] } : {},
+      )
 
       enable_iap  = var.enable_iap
       iap_members = var.iap_members
