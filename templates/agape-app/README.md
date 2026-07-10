@@ -31,7 +31,7 @@ marked spots. The reference implementation is league-analyzer's coach.
 
    ```hcl
    module "agape_app" {
-     source     = "git::https://github.com/tylerhslee/agape-soma.git//modules/agape-app?ref=v0.3.0"
+     source     = "git::https://github.com/tylerhslee/agape-soma.git//modules/agape-app?ref=v0.3.2"
      project_id = var.project_id
      region     = var.region
      name       = var.name

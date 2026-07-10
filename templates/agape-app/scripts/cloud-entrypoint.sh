@@ -5,16 +5,28 @@
 # mount to re-seed it from the image.
 set -e
 
+# The app and studio containers boot concurrently against the same GCS mount;
+# when both find a file missing, the slower cp loses GCS's write precondition
+# (412 -> stale file handle). The winner's object is complete, so losing the
+# race is success — only fail when the file truly did not materialize.
+seed_file() {
+  src="$1"; dst="$2"
+  [ -f "$dst" ] && return 0
+  if ! cp "$src" "$dst" 2>/dev/null; then
+    if [ -f "$dst" ]; then
+      echo "seed: $(basename "$dst") created concurrently by the peer service; keeping it"
+    else
+      echo "seed: failed to copy $(basename "$dst")" >&2
+      return 1
+    fi
+  fi
+}
+
 if [ -n "${AGAPE_SEED_DIR:-}" ] && [ -n "${AGAPE_PROJECT_DIR:-}" ] && [ -d "$AGAPE_SEED_DIR" ]; then
   mkdir -p "$AGAPE_PROJECT_DIR/programs"
-  if [ ! -f "$AGAPE_PROJECT_DIR/agape.toml" ]; then
-    cp "$AGAPE_SEED_DIR/agape.toml" "$AGAPE_PROJECT_DIR/agape.toml"
-  fi
+  seed_file "$AGAPE_SEED_DIR/agape.toml" "$AGAPE_PROJECT_DIR/agape.toml"
   for f in "$AGAPE_SEED_DIR"/programs/*.ag; do
-    base="$(basename "$f")"
-    if [ ! -f "$AGAPE_PROJECT_DIR/programs/$base" ]; then
-      cp "$f" "$AGAPE_PROJECT_DIR/programs/$base"
-    fi
+    seed_file "$f" "$AGAPE_PROJECT_DIR/programs/$(basename "$f")"
   done
   echo "agape project ready at $AGAPE_PROJECT_DIR"
 fi
