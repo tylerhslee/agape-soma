@@ -1,0 +1,34 @@
+# agape-app standard build: api + studio images from one Dockerfile.
+# The deploy script passes _APP, _REPO, and a unique _IMAGE_TAG per deploy.
+substitutions:
+  _REGION: us-west1
+  _REPO: myapp-dev-containers
+  _APP: myapp
+  _IMAGE_TAG: dev
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - Dockerfile
+      - --target
+      - api
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_APP}-app:${_IMAGE_TAG}
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - Dockerfile
+      - --target
+      - studio
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_APP}-studio:${_IMAGE_TAG}
+      - .
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_APP}-app:${_IMAGE_TAG}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/${_APP}-studio:${_IMAGE_TAG}

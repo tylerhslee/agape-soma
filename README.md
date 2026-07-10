@@ -16,6 +16,17 @@ in anymore — those are just values a caller passes.
 - `modules/runtime`: Cloud Run **services** and **jobs**, Pub/Sub **topics** and
   **subscriptions**, Cloud **scheduler** jobs, and optional Cloud SQL — every
   group is a map that defaults to empty.
+- `modules/agape-app` (**v0.3.0**): THE standard deployment for an
+  Agape-powered application — the whole point of Agape + Soma, extracted from
+  league-analyzer's coach. One call provisions the app service (Agape runtime
+  embedded in-process) and **Agape Studio as the admin surface** (editor,
+  orchestration graph, ledger, provider menu), both IAP-gated, sharing one
+  **persistent Agape project** on the state mount (Studio edits are what the
+  app executes; the knowledge substrate survives redeploys), with
+  `ANTHROPIC_API_KEY` and a stable Studio access token in Secret Manager.
+  The app-side half (Dockerfile targets, entrypoint seeding, deploy script)
+  lives in `templates/agape-app/` — see its README for the 6-step recipe to
+  replicate on any app (Whale, agape-fact-checker, ...).
 
 ## Versioning
 
