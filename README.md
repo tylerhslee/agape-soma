@@ -16,7 +16,7 @@ in anymore — those are just values a caller passes.
 - `modules/runtime`: Cloud Run **services** and **jobs**, Pub/Sub **topics** and
   **subscriptions**, Cloud **scheduler** jobs, and optional Cloud SQL — every
   group is a map that defaults to empty.
-- `modules/agape-app` (**v0.3.2**): THE standard deployment for an
+- `modules/agape-app` (**v0.4.0**): THE standard deployment for an
   Agape-powered application — the whole point of Agape + Soma, extracted from
   league-analyzer's coach. One call provisions the app service (Agape runtime
   embedded in-process) and **Agape Studio as the admin surface** (editor,

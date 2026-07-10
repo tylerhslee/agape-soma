@@ -84,11 +84,15 @@ module "runtime" {
     }
 
     studio = {
-      image         = var.studio_image
-      port          = 8080
-      mount_state   = true
-      max_instances = 1
-      env           = var.studio_env
+      image       = var.studio_image
+      port        = 8080
+      mount_state = true
+      # The lens, not the pen: Studio inspects the deployed project (programs,
+      # ledger, memory) but cannot mutate it — deployed cognition changes only
+      # by release. Set studio_readonly = false to restore live editing.
+      mount_state_read_only = var.studio_readonly
+      max_instances         = 1
+      env                   = var.studio_env
 
       # IAP authenticates Studio; the token gate is opt-in defense-in-depth.
       secret_env = merge(

@@ -168,7 +168,7 @@ resource "google_cloud_run_v2_service" "services" {
         name = "runtime-state"
         gcs {
           bucket    = var.state_bucket_name
-          read_only = false
+          read_only = each.value.mount_state_read_only
         }
       }
     }

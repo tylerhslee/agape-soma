@@ -52,6 +52,9 @@ variable "services" {
     invoker_members       = optional(list(string), [])
     mount_state           = optional(bool, false)
     state_mount_path      = optional(string, "/data")
+    # Read-only state mount: the service sees the shared state but cannot
+    # mutate it (e.g. Agape Studio as a pure lens on a deployed project).
+    mount_state_read_only = optional(bool, false)
     enable_iap            = optional(bool, false)
     iap_members           = optional(list(string), [])
     attach_cloud_sql      = optional(bool, false)

@@ -125,6 +125,12 @@ variable "studio_require_token" {
   default     = false
 }
 
+variable "studio_readonly" {
+  type        = bool
+  description = "Mount the shared Agape project read-only in Studio: the lens (ledger, graph, memory, programs) without the pen. Deployed cognition then changes only by release, never by live edit. Default true — set false to restore Studio editing in this environment."
+  default     = true
+}
+
 variable "app_min_instances" {
   type        = number
   description = "Minimum app instances (set 1 to avoid cold starts on gated coach turns)."
