@@ -8,7 +8,7 @@
 //   │  embeds agape-ts   │        │  editor · graph ·    │
 //   │  runtime in-process│        │  ledger · providers  │
 //   └────────┬───────────┘        └──────────┬───────────┘
-//        IAP │  ANTHROPIC_API_KEY (Secret Manager)  │ IAP
+//        IAP | provider secrets (Secret Manager) | IAP
 //            └───────────────┬────────────────┘
 //                            ▼
 //            GCS state mount: <agape_mount_path>
@@ -27,10 +27,10 @@ module "foundation" {
   name       = var.name
   labels     = var.labels
 
-  # The pattern's built-in secrets: the model provider key for the Agape
-  # runtime, and a stable Studio access token (Studio mints a random one per
-  # boot otherwise). Apps add their own via extra_secret_names.
-  secret_names = concat(["anthropic-api-key", "studio-access-token"], var.extra_secret_names)
+  # The pattern creates configurable provider secrets plus a stable Studio
+  # access token (Studio mints a random one per boot otherwise). Apps add
+  # their own via extra_secret_names.
+  secret_names = concat(var.provider_secret_names, ["studio-access-token"], var.extra_secret_names)
 
   additional_gcp_services = concat(
     var.enable_cloud_sql ? ["sqladmin.googleapis.com"] : [],
@@ -73,7 +73,7 @@ module "runtime" {
       env              = var.app_env
 
       secret_env = merge(
-        { ANTHROPIC_API_KEY = module.foundation.secret_ids["anthropic-api-key"] },
+        { for env_name, short in var.app_provider_secret_env : env_name => module.foundation.secret_ids[short] },
         { for env_name, short in var.app_secret_env : env_name => module.foundation.secret_ids[short] },
       )
 
@@ -96,7 +96,7 @@ module "runtime" {
 
       # IAP authenticates Studio; the token gate is opt-in defense-in-depth.
       secret_env = merge(
-        { ANTHROPIC_API_KEY = module.foundation.secret_ids["anthropic-api-key"] },
+        { for env_name, short in var.studio_provider_secret_env : env_name => module.foundation.secret_ids[short] },
         var.studio_require_token ? { STUDIO_ACCESS_TOKEN = module.foundation.secret_ids["studio-access-token"] } : {},
       )
 

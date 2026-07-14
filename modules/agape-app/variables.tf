@@ -59,15 +59,33 @@ variable "studio_env" {
   default     = {}
 }
 
+variable "provider_secret_names" {
+  type        = list(string)
+  description = "Provider Secret Manager short names to create for the Agape runtime. Defaults preserve the original Anthropic-backed app pattern; set [] for request-scoped provider keys."
+  default     = ["anthropic-api-key"]
+}
+
+variable "app_provider_secret_env" {
+  type        = map(string)
+  description = "Provider secret env for the app service: env var name => provider secret SHORT name. Defaults preserve ANTHROPIC_API_KEY."
+  default     = { ANTHROPIC_API_KEY = "anthropic-api-key" }
+}
+
+variable "studio_provider_secret_env" {
+  type        = map(string)
+  description = "Provider secret env for the Studio service: env var name => provider secret SHORT name. Defaults preserve ANTHROPIC_API_KEY."
+  default     = { ANTHROPIC_API_KEY = "anthropic-api-key" }
+}
+
 variable "extra_secret_names" {
   type        = list(string)
-  description = "Secret Manager short names to create beyond the built-ins (anthropic-api-key, studio-access-token)."
+  description = "Secret Manager short names to create beyond provider secrets and studio-access-token."
   default     = []
 }
 
 variable "app_secret_env" {
   type        = map(string)
-  description = "Extra secret env for the app service: env var name => secret SHORT name (must appear in extra_secret_names). ANTHROPIC_API_KEY is always injected."
+  description = "Extra secret env for the app service: env var name => secret SHORT name (must appear in extra_secret_names). Provider secrets are controlled separately by app_provider_secret_env."
   default     = {}
 }
 
